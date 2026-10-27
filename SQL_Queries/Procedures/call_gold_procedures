@@ -1,0 +1,7 @@
+CALL gold.sp_load_mart_sales(1);
+CALL gold.sp_load_mart_purchase(1);
+CALL gold.sp_load_mart_music_sales(1);
+
+select * from gold.mart_sales;
+select * from gold.mart_purchase;
+select * from gold.mart_music_sales;

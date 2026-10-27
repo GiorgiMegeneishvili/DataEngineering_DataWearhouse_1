@@ -1,0 +1,67 @@
+-- =====================================================
+-- gold.sp_load_mart_music_sales   (silver -> gold, MERGE)
+-- Only Chinook (CNK1) sales lines from silver.fact_sales.
+-- Prerequisite: silver is loaded (fact_sales + dimensions)
+-- Run:    CALL gold.sp_load_mart_music_sales(1);
+--
+-- * track / artist / album / genre / media type come from silver.dim_product (CNK1 tracks)
+-- * customer country / city come from the customer's dim_geography row
+-- * support_rep_name = the employee_key of the sale (customer's support rep)
+-- =====================================================
+CREATE OR REPLACE PROCEDURE gold.sp_load_mart_music_sales(p_batch_id BIGINT)
+LANGUAGE plpgsql AS $$
+BEGIN
+    MERGE INTO gold.mart_music_sales t
+    USING (
+        SELECT f.sales_key, f.src_sys_id, f.src_order_id, f.src_line_id,
+
+               f.order_date AS invoice_date,
+               EXTRACT(YEAR  FROM f.order_date)::smallint AS invoice_year,
+               EXTRACT(MONTH FROM f.order_date)::smallint AS invoice_month,
+
+               NULLIF(p.src_product_id, '-1') AS track_src_id,
+               p.product_name AS track_name,
+               p.artist_name, p.album_title, p.genre_name, p.media_type, p.composer,
+
+               NULLIF(c.src_person_id, '-1')          AS customer_src_id,
+               COALESCE(c.full_name, c.company_name)  AS customer_name,
+               cg.country AS customer_country,
+               cg.city    AS customer_city,
+               e.full_name AS support_rep_name,
+
+               f.quantity, f.unit_price, f.line_total
+        FROM silver.fact_sales f
+        JOIN silver.dim_product   p  ON p.product_key    = f.product_key
+        JOIN silver.dim_person    c  ON c.person_key     = f.customer_key
+        JOIN silver.dim_geography cg ON cg.geography_key = c.geography_key
+        JOIN silver.dim_person    e  ON e.person_key     = f.employee_key
+        WHERE f.src_sys_id = 'CNK1'
+    ) s
+       ON t.sales_key = s.sales_key
+    WHEN MATCHED AND ROW(t.src_sys_id, t.src_order_id, t.src_line_id, t.invoice_date, t.invoice_year, t.invoice_month,
+                         t.track_src_id, t.track_name, t.artist_name, t.album_title, t.genre_name, t.media_type,
+                         t.composer, t.customer_src_id, t.customer_name, t.customer_country, t.customer_city,
+                         t.support_rep_name, t.quantity, t.unit_price, t.line_total)
+         IS DISTINCT FROM
+                     ROW(s.src_sys_id, s.src_order_id, s.src_line_id, s.invoice_date, s.invoice_year, s.invoice_month,
+                         s.track_src_id, s.track_name, s.artist_name, s.album_title, s.genre_name, s.media_type,
+                         s.composer, s.customer_src_id, s.customer_name, s.customer_country, s.customer_city,
+                         s.support_rep_name, s.quantity, s.unit_price, s.line_total) THEN
+         UPDATE SET src_sys_id = s.src_sys_id, src_order_id = s.src_order_id, src_line_id = s.src_line_id,
+                    invoice_date = s.invoice_date, invoice_year = s.invoice_year, invoice_month = s.invoice_month,
+                    track_src_id = s.track_src_id, track_name = s.track_name, artist_name = s.artist_name,
+                    album_title = s.album_title, genre_name = s.genre_name, media_type = s.media_type,
+                    composer = s.composer, customer_src_id = s.customer_src_id, customer_name = s.customer_name,
+                    customer_country = s.customer_country, customer_city = s.customer_city,
+                    support_rep_name = s.support_rep_name, quantity = s.quantity, unit_price = s.unit_price,
+                    line_total = s.line_total, load_dts = CURRENT_TIMESTAMP, batch_id = p_batch_id
+    WHEN NOT MATCHED THEN
+         INSERT (sales_key, src_sys_id, src_order_id, src_line_id, invoice_date, invoice_year, invoice_month,
+                 track_src_id, track_name, artist_name, album_title, genre_name, media_type, composer,
+                 customer_src_id, customer_name, customer_country, customer_city, support_rep_name,
+                 quantity, unit_price, line_total, batch_id)
+         VALUES (s.sales_key, s.src_sys_id, s.src_order_id, s.src_line_id, s.invoice_date, s.invoice_year, s.invoice_month,
+                 s.track_src_id, s.track_name, s.artist_name, s.album_title, s.genre_name, s.media_type, s.composer,
+                 s.customer_src_id, s.customer_name, s.customer_country, s.customer_city, s.support_rep_name,
+                 s.quantity, s.unit_price, s.line_total, p_batch_id);
+END $$;

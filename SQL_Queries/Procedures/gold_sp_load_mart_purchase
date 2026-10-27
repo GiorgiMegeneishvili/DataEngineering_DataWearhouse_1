@@ -1,0 +1,82 @@
+-- =====================================================
+-- gold.sp_load_mart_purchase   (silver -> gold, MERGE)
+-- Prerequisite: silver is loaded (fact_purchase + dimensions)
+-- Run:    CALL gold.sp_load_mart_purchase(1);
+--
+-- * reject_rate = rejected_qty / received_qty (NULL when nothing was received)
+-- * supplier country / city come from the supplier's dim_geography row
+-- * source IDs of the unknown member ('-1') become NULL
+-- =====================================================
+CREATE OR REPLACE PROCEDURE gold.sp_load_mart_purchase(p_batch_id BIGINT)
+LANGUAGE plpgsql AS $$
+BEGIN
+    MERGE INTO gold.mart_purchase t
+    USING (
+        SELECT f.purchase_key, f.src_sys_id, f.src_order_id, f.src_line_id,
+
+               f.order_date, f.ship_date, f.due_date,
+               EXTRACT(YEAR  FROM f.order_date)::smallint AS order_year,
+               EXTRACT(MONTH FROM f.order_date)::smallint AS order_month,
+
+               NULLIF(p.src_product_id, '-1')   AS product_src_id,
+               p.product_name, p.category, p.subcategory,
+
+               NULLIF(v.src_supplier_id, '-1')  AS supplier_src_id,
+               v.supplier_name, v.account_number, v.credit_rating, v.is_preferred,
+               vg.country AS supplier_country,
+               vg.city    AS supplier_city,
+
+               NULLIF(e.src_person_id, '-1')    AS employee_src_id,
+               e.full_name                      AS employee_name,
+
+               f.order_qty, f.received_qty, f.rejected_qty, f.unit_price, f.line_total,
+               f.allocated_freight, f.allocated_tax,
+               CASE WHEN f.received_qty > 0
+                    THEN ROUND(f.rejected_qty / f.received_qty, 4) END::numeric(9,4) AS reject_rate
+        FROM silver.fact_purchase f
+        JOIN silver.dim_product   p  ON p.product_key    = f.product_key
+        JOIN silver.dim_supplier  v  ON v.supplier_key   = f.supplier_key
+        JOIN silver.dim_geography vg ON vg.geography_key = v.geography_key
+        JOIN silver.dim_person    e  ON e.person_key     = f.employee_key
+    ) s
+       ON t.purchase_key = s.purchase_key
+    WHEN MATCHED AND ROW(t.src_sys_id, t.src_order_id, t.src_line_id, t.order_date, t.ship_date, t.due_date,
+                         t.order_year, t.order_month, t.product_src_id, t.product_name, t.category, t.subcategory,
+                         t.supplier_src_id, t.supplier_name, t.account_number, t.credit_rating, t.is_preferred,
+                         t.supplier_country, t.supplier_city, t.employee_src_id, t.employee_name,
+                         t.order_qty, t.received_qty, t.rejected_qty, t.unit_price, t.line_total,
+                         t.allocated_freight, t.allocated_tax, t.reject_rate)
+         IS DISTINCT FROM
+                     ROW(s.src_sys_id, s.src_order_id, s.src_line_id, s.order_date, s.ship_date, s.due_date,
+                         s.order_year, s.order_month, s.product_src_id, s.product_name, s.category, s.subcategory,
+                         s.supplier_src_id, s.supplier_name, s.account_number, s.credit_rating, s.is_preferred,
+                         s.supplier_country, s.supplier_city, s.employee_src_id, s.employee_name,
+                         s.order_qty, s.received_qty, s.rejected_qty, s.unit_price, s.line_total,
+                         s.allocated_freight, s.allocated_tax, s.reject_rate) THEN
+         UPDATE SET src_sys_id = s.src_sys_id, src_order_id = s.src_order_id, src_line_id = s.src_line_id,
+                    order_date = s.order_date, ship_date = s.ship_date, due_date = s.due_date,
+                    order_year = s.order_year, order_month = s.order_month,
+                    product_src_id = s.product_src_id, product_name = s.product_name,
+                    category = s.category, subcategory = s.subcategory,
+                    supplier_src_id = s.supplier_src_id, supplier_name = s.supplier_name,
+                    account_number = s.account_number, credit_rating = s.credit_rating,
+                    is_preferred = s.is_preferred, supplier_country = s.supplier_country,
+                    supplier_city = s.supplier_city, employee_src_id = s.employee_src_id,
+                    employee_name = s.employee_name, order_qty = s.order_qty, received_qty = s.received_qty,
+                    rejected_qty = s.rejected_qty, unit_price = s.unit_price, line_total = s.line_total,
+                    allocated_freight = s.allocated_freight, allocated_tax = s.allocated_tax,
+                    reject_rate = s.reject_rate, load_dts = CURRENT_TIMESTAMP, batch_id = p_batch_id
+    WHEN NOT MATCHED THEN
+         INSERT (purchase_key, src_sys_id, src_order_id, src_line_id, order_date, ship_date, due_date,
+                 order_year, order_month, product_src_id, product_name, category, subcategory,
+                 supplier_src_id, supplier_name, account_number, credit_rating, is_preferred,
+                 supplier_country, supplier_city, employee_src_id, employee_name,
+                 order_qty, received_qty, rejected_qty, unit_price, line_total,
+                 allocated_freight, allocated_tax, reject_rate, batch_id)
+         VALUES (s.purchase_key, s.src_sys_id, s.src_order_id, s.src_line_id, s.order_date, s.ship_date, s.due_date,
+                 s.order_year, s.order_month, s.product_src_id, s.product_name, s.category, s.subcategory,
+                 s.supplier_src_id, s.supplier_name, s.account_number, s.credit_rating, s.is_preferred,
+                 s.supplier_country, s.supplier_city, s.employee_src_id, s.employee_name,
+                 s.order_qty, s.received_qty, s.rejected_qty, s.unit_price, s.line_total,
+                 s.allocated_freight, s.allocated_tax, s.reject_rate, p_batch_id);
+END $$;

@@ -1,0 +1,91 @@
+-- =====================================================
+-- gold.sp_load_mart_sales   (silver -> gold, MERGE)
+-- Prerequisite: silver is loaded (fact_sales + dimensions)
+-- Run:    CALL gold.sp_load_mart_sales(1);
+--
+-- * joins silver.fact_sales to the dimension rows its keys point to
+--   (SCD2: the version that was current when the sale was loaded)
+-- * source IDs of the unknown member ('-1') become NULL
+-- * new row -> INSERT, changed row -> UPDATE, unchanged row -> untouched
+-- =====================================================
+CREATE OR REPLACE PROCEDURE gold.sp_load_mart_sales(p_batch_id BIGINT)
+LANGUAGE plpgsql AS $$
+BEGIN
+    MERGE INTO gold.mart_sales t
+    USING (
+        SELECT f.sales_key, f.src_sys_id, f.src_order_id, f.src_line_id,
+
+               f.order_date, f.due_date, f.ship_date,
+               EXTRACT(YEAR  FROM f.order_date)::smallint AS order_year,
+               EXTRACT(MONTH FROM f.order_date)::smallint AS order_month,
+
+               NULLIF(p.src_product_id, '-1')              AS product_src_id,
+               p.product_name, p.product_number, p.category, p.subcategory,
+
+               NULLIF(c.src_person_id, '-1')               AS customer_src_id,
+               COALESCE(c.full_name, c.company_name)       AS customer_name,
+               c.customer_kind,
+
+               NULLIF(e.src_person_id, '-1')               AS employee_src_id,
+               e.full_name                                 AS employee_name,
+
+               g.country        AS ship_country,
+               g.state_province AS ship_state_province,
+               g.city           AS ship_city,
+
+               tr.territory_name, tr.territory_group,
+               sh.shipper_name,
+
+               f.quantity, f.unit_price, f.discount, f.line_total,
+               f.allocated_freight, f.allocated_tax,
+               (f.line_total + COALESCE(f.allocated_freight, 0) + COALESCE(f.allocated_tax, 0)) AS total_amount
+        FROM silver.fact_sales f
+        JOIN silver.dim_product         p  ON p.product_key     = f.product_key
+        JOIN silver.dim_person          c  ON c.person_key      = f.customer_key
+        JOIN silver.dim_person          e  ON e.person_key      = f.employee_key
+        JOIN silver.dim_geography       g  ON g.geography_key   = f.ship_geography_key
+        JOIN silver.dim_sales_territory tr ON tr.territory_key  = f.territory_key
+        JOIN silver.dim_shipper         sh ON sh.shipper_key    = f.shipper_key
+    ) s
+       ON t.sales_key = s.sales_key
+    WHEN MATCHED AND ROW(t.src_sys_id, t.src_order_id, t.src_line_id, t.order_date, t.due_date, t.ship_date,
+                         t.order_year, t.order_month, t.product_src_id, t.product_name, t.product_number,
+                         t.category, t.subcategory, t.customer_src_id, t.customer_name, t.customer_kind,
+                         t.employee_src_id, t.employee_name, t.ship_country, t.ship_state_province, t.ship_city,
+                         t.territory_name, t.territory_group, t.shipper_name, t.quantity, t.unit_price,
+                         t.discount, t.line_total, t.allocated_freight, t.allocated_tax, t.total_amount)
+         IS DISTINCT FROM
+                     ROW(s.src_sys_id, s.src_order_id, s.src_line_id, s.order_date, s.due_date, s.ship_date,
+                         s.order_year, s.order_month, s.product_src_id, s.product_name, s.product_number,
+                         s.category, s.subcategory, s.customer_src_id, s.customer_name, s.customer_kind,
+                         s.employee_src_id, s.employee_name, s.ship_country, s.ship_state_province, s.ship_city,
+                         s.territory_name, s.territory_group, s.shipper_name, s.quantity, s.unit_price,
+                         s.discount, s.line_total, s.allocated_freight, s.allocated_tax, s.total_amount) THEN
+         UPDATE SET src_sys_id = s.src_sys_id, src_order_id = s.src_order_id, src_line_id = s.src_line_id,
+                    order_date = s.order_date, due_date = s.due_date, ship_date = s.ship_date,
+                    order_year = s.order_year, order_month = s.order_month,
+                    product_src_id = s.product_src_id, product_name = s.product_name,
+                    product_number = s.product_number, category = s.category, subcategory = s.subcategory,
+                    customer_src_id = s.customer_src_id, customer_name = s.customer_name,
+                    customer_kind = s.customer_kind, employee_src_id = s.employee_src_id,
+                    employee_name = s.employee_name, ship_country = s.ship_country,
+                    ship_state_province = s.ship_state_province, ship_city = s.ship_city,
+                    territory_name = s.territory_name, territory_group = s.territory_group,
+                    shipper_name = s.shipper_name, quantity = s.quantity, unit_price = s.unit_price,
+                    discount = s.discount, line_total = s.line_total,
+                    allocated_freight = s.allocated_freight, allocated_tax = s.allocated_tax,
+                    total_amount = s.total_amount, load_dts = CURRENT_TIMESTAMP, batch_id = p_batch_id
+    WHEN NOT MATCHED THEN
+         INSERT (sales_key, src_sys_id, src_order_id, src_line_id, order_date, due_date, ship_date,
+                 order_year, order_month, product_src_id, product_name, product_number, category, subcategory,
+                 customer_src_id, customer_name, customer_kind, employee_src_id, employee_name,
+                 ship_country, ship_state_province, ship_city, territory_name, territory_group, shipper_name,
+                 quantity, unit_price, discount, line_total, allocated_freight, allocated_tax, total_amount,
+                 batch_id)
+         VALUES (s.sales_key, s.src_sys_id, s.src_order_id, s.src_line_id, s.order_date, s.due_date, s.ship_date,
+                 s.order_year, s.order_month, s.product_src_id, s.product_name, s.product_number, s.category, s.subcategory,
+                 s.customer_src_id, s.customer_name, s.customer_kind, s.employee_src_id, s.employee_name,
+                 s.ship_country, s.ship_state_province, s.ship_city, s.territory_name, s.territory_group, s.shipper_name,
+                 s.quantity, s.unit_price, s.discount, s.line_total, s.allocated_freight, s.allocated_tax, s.total_amount,
+                 p_batch_id);
+END $$;
