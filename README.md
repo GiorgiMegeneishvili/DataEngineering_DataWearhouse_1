@@ -50,6 +50,62 @@ PySpark ETL&ELT
 /*********************************************************************************************************/
 /*********************************************************************************************************/
 /*********************************************************************************************************/
+## 🥉 Bronze Layer – Source Tables
+
+Bronze is a raw 1:1 copy of **36 source tables** from three MSSQL databases. Every table has the primary key `(source key, load_date)` and is partitioned by `load_date` (yearly partitions + a default partition). Table names follow the pattern `bronze.<source>_<table>`.
+
+### Northwind (`NW1`) – 8 tables
+
+| Source table | Bronze table |
+|---|---|
+| `Customers` | `bronze.nw1_customers` |
+| `Employees` | `bronze.nw1_employees` |
+| `Products` | `bronze.nw1_products` |
+| `Categories` | `bronze.nw1_categories` |
+| `Suppliers` | `bronze.nw1_suppliers` |
+| `Shippers` | `bronze.nw1_shippers` |
+| `Orders` | `bronze.nw1_orders` |
+| `Order Details` | `bronze.nw1_order_details` |
+
+### Chinook (`CNK1`) – 9 tables
+
+| Source table | Bronze table |
+|---|---|
+| `Customer` | `bronze.cnk1_customer` |
+| `Employee` | `bronze.cnk1_employee` |
+| `Artist` | `bronze.cnk1_artist` |
+| `Album` | `bronze.cnk1_album` |
+| `Track` | `bronze.cnk1_track` |
+| `Genre` | `bronze.cnk1_genre` |
+| `MediaType` | `bronze.cnk1_mediatype` |
+| `Invoice` | `bronze.cnk1_invoice` |
+| `InvoiceLine` | `bronze.cnk1_invoiceline` |
+
+### AdventureWorks2022 (`AW22`) – 19 tables
+
+| Source table | Bronze table |
+|---|---|
+| `Sales.SalesOrderHeader` | `bronze.aw22_salesorderheader` |
+| `Sales.SalesOrderDetail` | `bronze.aw22_salesorderdetail` |
+| `Sales.Customer` | `bronze.aw22_customer` |
+| `Sales.SalesPerson` | `bronze.aw22_salesperson` |
+| `Sales.SalesTerritory` | `bronze.aw22_salesterritory` |
+| `Sales.Store` | `bronze.aw22_store` |
+| `Person.Person` | `bronze.aw22_person` |
+| `Person.Address` | `bronze.aw22_address` |
+| `Person.StateProvince` | `bronze.aw22_stateprovince` |
+| `Person.CountryRegion` | `bronze.aw22_countryregion` |
+| `Person.BusinessEntityAddress` | `bronze.aw22_businessentityaddress` |
+| `HumanResources.Employee` | `bronze.aw22_employee` |
+| `Production.Product` | `bronze.aw22_product` |
+| `Production.ProductSubcategory` | `bronze.aw22_productsubcategory` |
+| `Production.ProductCategory` | `bronze.aw22_productcategory` |
+| `Production.WorkOrder` | `bronze.aw22_workorder` |
+| `Purchasing.PurchaseOrderHeader` | `bronze.aw22_purchaseorderheader` |
+| `Purchasing.PurchaseOrderDetail` | `bronze.aw22_purchaseorderdetail` |
+| `Purchasing.Vendor` | `bronze.aw22_vendor` |
+
+
 ## 📊 Data Modeling: Silver Layer - Data Lakehouse (Galaxy Schema) 
 
 Dimensions: dim_geography, dim_person (customers + employees), dim_product, dim_supplier, dim_shipper, dim_sales_territory
