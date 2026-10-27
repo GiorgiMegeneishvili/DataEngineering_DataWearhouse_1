@@ -1,0 +1,29 @@
+-- =====================================================
+-- silver.sp_load_dim_shipper  (standalone: helper function + one procedure)
+-- No dependency on other dimensions.
+-- Run:    CALL silver.sp_load_dim_shipper(1);
+-- =====================================================
+
+CREATE OR REPLACE FUNCTION silver.f_clean(x text) RETURNS text
+LANGUAGE sql IMMUTABLE AS $$ SELECT NULLIF(TRIM(x), '') $$;
+
+-- =====================================================
+-- dim_shipper (SCD1): NW1 Shippers
+-- =====================================================
+CREATE OR REPLACE PROCEDURE silver.sp_load_dim_shipper(p_batch_id BIGINT)
+LANGUAGE plpgsql AS $$
+BEGIN
+    MERGE INTO silver.dim_shipper t
+    USING (
+        SELECT 'NW1'::varchar AS src_sys_id, x.shipperid::text AS src_shipper_id,
+               silver.f_clean(x.companyname) AS shipper_name, silver.f_clean(x.phone) AS phone
+        FROM (SELECT DISTINCT ON (shipperid) * FROM bronze.nw1_shippers ORDER BY shipperid, load_date DESC) x
+    ) s
+       ON t.src_sys_id = s.src_sys_id AND t.src_shipper_id = s.src_shipper_id
+    WHEN MATCHED AND ROW(t.shipper_name, t.phone) IS DISTINCT FROM ROW(s.shipper_name, s.phone) THEN
+         UPDATE SET shipper_name = s.shipper_name, phone = s.phone,
+                    load_dts = CURRENT_TIMESTAMP, batch_id = p_batch_id
+    WHEN NOT MATCHED THEN
+         INSERT (src_sys_id, src_shipper_id, shipper_name, phone, batch_id)
+         VALUES (s.src_sys_id, s.src_shipper_id, s.shipper_name, s.phone, p_batch_id);
+END $$;

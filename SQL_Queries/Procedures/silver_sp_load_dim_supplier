@@ -1,0 +1,87 @@
+-- =====================================================
+-- silver.sp_load_dim_supplier  (standalone: helper functions + one procedure)
+-- Prerequisite: silver.dim_geography already loaded
+--               (CALL silver.sp_load_dim_geography(...) first)
+-- Run:    CALL silver.sp_load_dim_supplier(1);
+-- =====================================================
+
+CREATE OR REPLACE FUNCTION silver.f_clean(x text) RETURNS text
+LANGUAGE sql IMMUTABLE AS $$ SELECT NULLIF(TRIM(x), '') $$;
+
+CREATE OR REPLACE FUNCTION silver.f_geo(x text) RETURNS text
+LANGUAGE sql IMMUTABLE AS $$ SELECT COALESCE(NULLIF(TRIM(x), ''), 'N/A') $$;
+
+-- =====================================================
+-- dim_supplier (SCD1): AW22 Vendor + NW1 Suppliers
+-- =====================================================
+CREATE OR REPLACE PROCEDURE silver.sp_load_dim_supplier(p_batch_id BIGINT)
+LANGUAGE plpgsql AS $$
+BEGIN
+    MERGE INTO silver.dim_supplier t
+    USING (
+        WITH
+        aw_ven AS (SELECT DISTINCT ON (businessentityid) * FROM bronze.aw22_vendor ORDER BY businessentityid, load_date DESC),
+        aw_bea AS (SELECT DISTINCT ON (businessentityid, addressid, addresstypeid) * FROM bronze.aw22_businessentityaddress
+                   ORDER BY businessentityid, addressid, addresstypeid, load_date DESC),
+        aw_adr AS (SELECT DISTINCT ON (addressid)         * FROM bronze.aw22_address       ORDER BY addressid, load_date DESC),
+        aw_sp  AS (SELECT DISTINCT ON (stateprovinceid)   * FROM bronze.aw22_stateprovince ORDER BY stateprovinceid, load_date DESC),
+        aw_cr  AS (SELECT DISTINCT ON (countryregioncode) * FROM bronze.aw22_countryregion ORDER BY countryregioncode, load_date DESC),
+        nw_sup AS (SELECT DISTINCT ON (supplierid)        * FROM bronze.nw1_suppliers      ORDER BY supplierid, load_date DESC),
+        aw_addr AS (
+            SELECT DISTINCT ON (b.businessentityid)
+                   b.businessentityid, a.addressline1, a.addressline2, a.city, a.postalcode,
+                   sp.name AS state_name, cr.name AS country_name
+            FROM aw_bea b
+            JOIN aw_adr a ON a.addressid = b.addressid
+            LEFT JOIN aw_sp sp ON sp.stateprovinceid = a.stateprovinceid
+            LEFT JOIN aw_cr cr ON cr.countryregioncode = sp.countryregioncode
+            ORDER BY b.businessentityid,
+                     CASE b.addresstypeid WHEN 3 THEN 1 WHEN 2 THEN 2 WHEN 1 THEN 3 ELSE 4 END, b.addressid
+        ),
+        raw (src_sys_id, src_supplier_id, supplier_name, account_number, contact_name, contact_title, phone, fax,
+             homepage, address_line, postal_code, country, state_province, city,
+             credit_rating, is_preferred, is_active) AS (
+            SELECT 'AW22', v.businessentityid::text, silver.f_clean(v.name), silver.f_clean(v.accountnumber),
+                   NULL, NULL, NULL, NULL, silver.f_clean(v.purchasingwebserviceurl),
+                   silver.f_clean(concat_ws(', ', ad.addressline1, ad.addressline2)), silver.f_clean(ad.postalcode),
+                   silver.f_geo(ad.country_name), silver.f_geo(ad.state_name), silver.f_geo(ad.city),
+                   v.creditrating::smallint, v.preferredvendorstatus::boolean, v.activeflag::boolean
+            FROM aw_ven v
+            LEFT JOIN aw_addr ad ON ad.businessentityid = v.businessentityid
+            UNION ALL
+            SELECT 'NW1', x.supplierid::text, silver.f_clean(x.companyname), NULL,
+                   silver.f_clean(x.contactname), silver.f_clean(x.contacttitle), silver.f_clean(x.phone), silver.f_clean(x.fax),
+                   silver.f_clean(x.homepage), silver.f_clean(x.address), silver.f_clean(x.postalcode),
+                   silver.f_geo(x.country), silver.f_geo(x.region), silver.f_geo(x.city),
+                   NULL::smallint, NULL::boolean, NULL::boolean
+            FROM nw_sup x
+        )
+        SELECT r.src_sys_id, r.src_supplier_id, r.supplier_name, r.account_number, r.contact_name, r.contact_title,
+               r.phone, r.fax, r.homepage, r.address_line, r.postal_code,
+               COALESCE(g.geography_key, -1) AS geography_key,
+               r.credit_rating, r.is_preferred, r.is_active
+        FROM raw r
+        LEFT JOIN silver.dim_geography g
+               ON g.src_sys_id = r.src_sys_id
+              AND g.src_geo_id = r.country || '|' || r.state_province || '|' || r.city
+    ) s
+       ON t.src_sys_id = s.src_sys_id AND t.src_supplier_id = s.src_supplier_id
+    WHEN MATCHED AND ROW(t.supplier_name, t.account_number, t.contact_name, t.contact_title, t.phone, t.fax,
+                         t.homepage, t.address_line, t.postal_code, t.geography_key,
+                         t.credit_rating, t.is_preferred, t.is_active)
+         IS DISTINCT FROM
+                     ROW(s.supplier_name, s.account_number, s.contact_name, s.contact_title, s.phone, s.fax,
+                         s.homepage, s.address_line, s.postal_code, s.geography_key,
+                         s.credit_rating, s.is_preferred, s.is_active) THEN
+         UPDATE SET supplier_name = s.supplier_name, account_number = s.account_number,
+                    contact_name = s.contact_name, contact_title = s.contact_title, phone = s.phone, fax = s.fax,
+                    homepage = s.homepage, address_line = s.address_line, postal_code = s.postal_code,
+                    geography_key = s.geography_key, credit_rating = s.credit_rating,
+                    is_preferred = s.is_preferred, is_active = s.is_active,
+                    load_dts = CURRENT_TIMESTAMP, batch_id = p_batch_id
+    WHEN NOT MATCHED THEN
+         INSERT (src_sys_id, src_supplier_id, supplier_name, account_number, contact_name, contact_title, phone, fax,
+                 homepage, address_line, postal_code, geography_key, credit_rating, is_preferred, is_active, batch_id)
+         VALUES (s.src_sys_id, s.src_supplier_id, s.supplier_name, s.account_number, s.contact_name, s.contact_title, s.phone, s.fax,
+                 s.homepage, s.address_line, s.postal_code, s.geography_key, s.credit_rating, s.is_preferred, s.is_active, p_batch_id);
+END $$;

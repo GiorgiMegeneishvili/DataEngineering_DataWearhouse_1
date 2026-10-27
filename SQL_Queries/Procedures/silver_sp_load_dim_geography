@@ -1,0 +1,52 @@
+CREATE OR REPLACE FUNCTION silver.f_geo(x text) RETURNS text
+LANGUAGE sql IMMUTABLE AS $$ SELECT COALESCE(NULLIF(TRIM(x), ''), 'N/A') $$;
+
+SELECT silver.f_geo('  Seattle ') AS a, silver.f_geo('') AS b, silver.f_geo(NULL) AS c;
+-- უნდა დააბრუნოს: Seattle | N/A | N/A
+
+CREATE OR REPLACE PROCEDURE silver.sp_load_dim_geography(p_batch_id BIGINT)
+LANGUAGE plpgsql AS $$
+BEGIN
+    MERGE INTO silver.dim_geography t
+    USING (
+        WITH
+        -- (ა) bronze-იდან ბოლო snapshot თითო გასაღებზე
+        aw_adr  AS (SELECT DISTINCT ON (addressid)         * FROM bronze.aw22_address       ORDER BY addressid, load_date DESC),
+        aw_sp   AS (SELECT DISTINCT ON (stateprovinceid)   * FROM bronze.aw22_stateprovince ORDER BY stateprovinceid, load_date DESC),
+        aw_cr   AS (SELECT DISTINCT ON (countryregioncode) * FROM bronze.aw22_countryregion ORDER BY countryregioncode, load_date DESC),
+        nw_cus  AS (SELECT DISTINCT ON (customerid) * FROM bronze.nw1_customers ORDER BY customerid, load_date DESC),
+        nw_emp  AS (SELECT DISTINCT ON (employeeid) * FROM bronze.nw1_employees ORDER BY employeeid, load_date DESC),
+        nw_sup  AS (SELECT DISTINCT ON (supplierid) * FROM bronze.nw1_suppliers ORDER BY supplierid, load_date DESC),
+        nw_ord  AS (SELECT DISTINCT ON (orderid)    * FROM bronze.nw1_orders    ORDER BY orderid,    load_date DESC),
+        ck_cus  AS (SELECT DISTINCT ON (customerid) * FROM bronze.cnk1_customer ORDER BY customerid, load_date DESC),
+        ck_emp  AS (SELECT DISTINCT ON (employeeid) * FROM bronze.cnk1_employee ORDER BY employeeid, load_date DESC),
+        ck_inv  AS (SELECT DISTINCT ON (invoiceid)  * FROM bronze.cnk1_invoice  ORDER BY invoiceid,  load_date DESC),
+        -- (ბ) სამივე წყაროდან country / state / city ერთ სიაში
+        src AS (
+            SELECT 'AW22'::varchar AS src_sys_id, cr.countryregioncode::varchar AS country_code,
+                   silver.f_geo(cr.name) AS country, silver.f_geo(sp.name) AS state_province, silver.f_geo(a.city) AS city
+            FROM aw_adr a
+            LEFT JOIN aw_sp sp ON sp.stateprovinceid = a.stateprovinceid
+            LEFT JOIN aw_cr cr ON cr.countryregioncode = sp.countryregioncode
+            UNION ALL SELECT 'NW1',  NULL, silver.f_geo(country),        silver.f_geo(region),       silver.f_geo(city)        FROM nw_cus
+            UNION ALL SELECT 'NW1',  NULL, silver.f_geo(country),        silver.f_geo(region),       silver.f_geo(city)        FROM nw_emp
+            UNION ALL SELECT 'NW1',  NULL, silver.f_geo(country),        silver.f_geo(region),       silver.f_geo(city)        FROM nw_sup
+            UNION ALL SELECT 'NW1',  NULL, silver.f_geo(shipcountry),    silver.f_geo(shipregion),   silver.f_geo(shipcity)    FROM nw_ord
+            UNION ALL SELECT 'CNK1', NULL, silver.f_geo(country),        silver.f_geo(state),        silver.f_geo(city)        FROM ck_cus
+            UNION ALL SELECT 'CNK1', NULL, silver.f_geo(country),        silver.f_geo(state),        silver.f_geo(city)        FROM ck_emp
+            UNION ALL SELECT 'CNK1', NULL, silver.f_geo(billingcountry), silver.f_geo(billingstate), silver.f_geo(billingcity) FROM ck_inv
+        )
+        -- (გ) დუბლიკატების მოშორება: ერთი ჩანაწერი ერთ ქვეყანა|შტატი|ქალაქზე
+        SELECT src_sys_id,
+               country || '|' || state_province || '|' || city AS src_geo_id,
+               MAX(country_code) AS country_code, country, state_province, city
+        FROM src
+        GROUP BY src_sys_id, country, state_province, city
+    ) s
+       ON t.src_sys_id = s.src_sys_id AND t.src_geo_id = s.src_geo_id
+    WHEN MATCHED AND t.country_code IS DISTINCT FROM s.country_code THEN
+         UPDATE SET country_code = s.country_code, load_dts = CURRENT_TIMESTAMP, batch_id = p_batch_id
+    WHEN NOT MATCHED THEN
+         INSERT (src_sys_id, src_geo_id, country_code, country, state_province, city, batch_id)
+         VALUES (s.src_sys_id, s.src_geo_id, s.country_code, s.country, s.state_province, s.city, p_batch_id);
+END $$;

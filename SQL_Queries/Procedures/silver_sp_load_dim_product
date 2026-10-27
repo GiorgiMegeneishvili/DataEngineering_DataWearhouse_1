@@ -1,0 +1,101 @@
+-- =====================================================
+-- silver.sp_load_dim_product  (standalone: helper functions + one procedure)
+-- No dependency on other dimensions (dim_geography is not needed).
+-- Run:    CALL silver.sp_load_dim_product(1);
+-- =====================================================
+
+-- ---------- helper functions ----------
+CREATE OR REPLACE FUNCTION silver.f_clean(x text) RETURNS text
+LANGUAGE sql IMMUTABLE AS $$ SELECT NULLIF(TRIM(x), '') $$;
+
+CREATE OR REPLACE FUNCTION silver.f_geo(x text) RETURNS text
+LANGUAGE sql IMMUTABLE AS $$ SELECT COALESCE(NULLIF(TRIM(x), ''), 'N/A') $$;
+
+
+
+-- =====================================================
+-- dim_product (SCD2): AW22 Product, NW1 Products, CNK1 Track
+-- =====================================================
+CREATE OR REPLACE PROCEDURE silver.sp_load_dim_product(p_batch_id BIGINT)
+LANGUAGE plpgsql AS $$
+BEGIN
+    DROP TABLE IF EXISTS tmp_dim_product;
+
+    CREATE TEMP TABLE tmp_dim_product ON COMMIT DROP AS
+    WITH
+    aw_prd AS (SELECT DISTINCT ON (productid)            * FROM bronze.aw22_product            ORDER BY productid,            load_date DESC),
+    aw_sub AS (SELECT DISTINCT ON (productsubcategoryid) * FROM bronze.aw22_productsubcategory ORDER BY productsubcategoryid, load_date DESC),
+    aw_cat AS (SELECT DISTINCT ON (productcategoryid)    * FROM bronze.aw22_productcategory    ORDER BY productcategoryid,    load_date DESC),
+    nw_prd AS (SELECT DISTINCT ON (productid)  * FROM bronze.nw1_products   ORDER BY productid,  load_date DESC),
+    nw_cat AS (SELECT DISTINCT ON (categoryid) * FROM bronze.nw1_categories ORDER BY categoryid, load_date DESC),
+    ck_trk AS (SELECT DISTINCT ON (trackid)     * FROM bronze.cnk1_track     ORDER BY trackid,     load_date DESC),
+    ck_alb AS (SELECT DISTINCT ON (albumid)     * FROM bronze.cnk1_album     ORDER BY albumid,     load_date DESC),
+    ck_art AS (SELECT DISTINCT ON (artistid)    * FROM bronze.cnk1_artist    ORDER BY artistid,    load_date DESC),
+    ck_gen AS (SELECT DISTINCT ON (genreid)     * FROM bronze.cnk1_genre     ORDER BY genreid,     load_date DESC),
+    ck_med AS (SELECT DISTINCT ON (mediatypeid) * FROM bronze.cnk1_mediatype ORDER BY mediatypeid, load_date DESC),
+
+    raw (src_sys_id, src_product_id, product_name, product_number, category, subcategory, color, size,
+         weight, standard_cost, list_price, is_discontinued, sell_start_date, sell_end_date,
+         supplier_src_id, artist_name, album_title, genre_name, media_type, composer) AS (
+
+        SELECT 'AW22', p.productid::text, silver.f_clean(p.name), silver.f_clean(p.productnumber),
+               silver.f_clean(c.name), silver.f_clean(sc.name), silver.f_clean(p.color), silver.f_clean(p.size),
+               p.weight::numeric(10,2), p.standardcost::numeric(19,4), p.listprice::numeric(19,4),
+               (p.sellenddate IS NOT NULL OR p.discontinueddate IS NOT NULL),
+               p.sellstartdate::date, p.sellenddate::date,
+               NULL, NULL, NULL, NULL, NULL, NULL
+        FROM aw_prd p
+        LEFT JOIN aw_sub sc ON sc.productsubcategoryid = p.productsubcategoryid
+        LEFT JOIN aw_cat c  ON c.productcategoryid     = sc.productcategoryid
+
+        UNION ALL
+        SELECT 'NW1', p.productid::text, silver.f_clean(p.productname), NULL,
+               silver.f_clean(c.categoryname), NULL, NULL, NULL,
+               NULL::numeric(10,2), NULL::numeric(19,4), p.unitprice::numeric(19,4),
+               p.discontinued, NULL::date, NULL::date,
+               p.supplierid::text, NULL, NULL, NULL, NULL, NULL
+        FROM nw_prd p
+        LEFT JOIN nw_cat c ON c.categoryid = p.categoryid
+
+        UNION ALL
+        SELECT 'CNK1', tr.trackid::text, silver.f_clean(tr.name), NULL, NULL, NULL, NULL, NULL,
+               NULL::numeric(10,2), NULL::numeric(19,4), tr.unitprice::numeric(19,4),
+               NULL::boolean, NULL::date, NULL::date,
+               NULL, silver.f_clean(ar.name), silver.f_clean(al.title), silver.f_clean(g.name),
+               silver.f_clean(m.name), silver.f_clean(tr.composer)
+        FROM ck_trk tr
+        LEFT JOIN ck_alb al ON al.albumid     = tr.albumid
+        LEFT JOIN ck_art ar ON ar.artistid    = al.artistid
+        LEFT JOIN ck_gen g  ON g.genreid      = tr.genreid
+        LEFT JOIN ck_med m  ON m.mediatypeid  = tr.mediatypeid
+    )
+    SELECT r.*,
+           md5(ROW(r.product_name, r.product_number, r.category, r.subcategory, r.color, r.size, r.weight,
+                   r.standard_cost, r.list_price, r.is_discontinued, r.sell_start_date, r.sell_end_date,
+                   r.supplier_src_id, r.artist_name, r.album_title, r.genre_name, r.media_type, r.composer)::text) AS row_hash
+    FROM raw r;
+
+    MERGE INTO silver.dim_product t
+    USING tmp_dim_product s
+       ON t.src_sys_id = s.src_sys_id AND t.src_product_id = s.src_product_id AND t.is_current
+    WHEN MATCHED AND t.row_hash <> s.row_hash THEN
+         UPDATE SET is_current = false
+    WHEN NOT MATCHED THEN
+         INSERT (src_sys_id, src_product_id, product_name, product_number, category, subcategory, color, size,
+                 weight, standard_cost, list_price, is_discontinued, sell_start_date, sell_end_date,
+                 supplier_src_id, artist_name, album_title, genre_name, media_type, composer, row_hash, batch_id)
+         VALUES (s.src_sys_id, s.src_product_id, s.product_name, s.product_number, s.category, s.subcategory, s.color, s.size,
+                 s.weight, s.standard_cost, s.list_price, s.is_discontinued, s.sell_start_date, s.sell_end_date,
+                 s.supplier_src_id, s.artist_name, s.album_title, s.genre_name, s.media_type, s.composer, s.row_hash, p_batch_id);
+
+    INSERT INTO silver.dim_product
+           (src_sys_id, src_product_id, product_name, product_number, category, subcategory, color, size,
+            weight, standard_cost, list_price, is_discontinued, sell_start_date, sell_end_date,
+            supplier_src_id, artist_name, album_title, genre_name, media_type, composer, row_hash, batch_id)
+    SELECT s.src_sys_id, s.src_product_id, s.product_name, s.product_number, s.category, s.subcategory, s.color, s.size,
+           s.weight, s.standard_cost, s.list_price, s.is_discontinued, s.sell_start_date, s.sell_end_date,
+           s.supplier_src_id, s.artist_name, s.album_title, s.genre_name, s.media_type, s.composer, s.row_hash, p_batch_id
+    FROM tmp_dim_product s
+    WHERE NOT EXISTS (SELECT 1 FROM silver.dim_product t
+                      WHERE t.src_sys_id = s.src_sys_id AND t.src_product_id = s.src_product_id AND t.is_current);
+END $$;

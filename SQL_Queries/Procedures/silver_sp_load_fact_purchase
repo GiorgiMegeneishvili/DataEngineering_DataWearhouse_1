@@ -1,0 +1,78 @@
+-- =====================================================
+-- silver.sp_load_fact_purchase  (standalone: one procedure; no helper functions needed)
+-- Prerequisites (load these first): dim_product, dim_supplier, dim_person
+-- Run:    CALL silver.sp_load_fact_purchase(1);
+-- =====================================================
+
+-- =====================================================
+-- fact_purchase: AW22 PurchaseOrderHeader + Detail
+-- =====================================================
+CREATE OR REPLACE PROCEDURE silver.sp_load_fact_purchase(p_batch_id BIGINT)
+LANGUAGE plpgsql AS $$
+BEGIN
+    MERGE INTO silver.fact_purchase t
+    USING (
+        WITH
+        aw_hdr AS (SELECT DISTINCT ON (purchaseorderid) * FROM bronze.aw22_purchaseorderheader ORDER BY purchaseorderid, load_date DESC),
+        aw_det AS (SELECT DISTINCT ON (purchaseorderid, purchaseorderdetailid) * FROM bronze.aw22_purchaseorderdetail
+                   ORDER BY purchaseorderid, purchaseorderdetailid, load_date DESC),
+        lines AS (
+            SELECT 'AW22'::varchar AS src_sys_id, d.purchaseorderid::text AS src_order_id,
+                   d.purchaseorderdetailid::text AS src_line_id,
+                   d.productid::text AS prod_id, h.vendorid::text AS ven_id, h.employeeid::text AS emp_id,
+                   h.orderdate::date AS order_date, h.shipdate::date AS ship_date, d.duedate::date AS due_date,
+                   d.orderqty::numeric AS order_qty, d.receivedqty::numeric AS received_qty,
+                   d.rejectedqty::numeric AS rejected_qty, d.unitprice::numeric AS unit_price,
+                   (d.orderqty * d.unitprice) AS line_total,
+                   h.freight::numeric AS hdr_freight, h.taxamt::numeric AS hdr_tax
+            FROM aw_det d
+            JOIN aw_hdr h ON h.purchaseorderid = d.purchaseorderid
+        ),
+        alloc AS (
+            SELECT l.*, SUM(l.line_total) OVER (PARTITION BY l.src_sys_id, l.src_order_id) AS order_total
+            FROM lines l
+        )
+        SELECT a.src_sys_id, a.src_order_id, a.src_line_id,
+               COALESCE(dp.product_key, -1)  AS product_key,
+               COALESCE(dv.supplier_key, -1) AS supplier_key,
+               COALESCE(de.person_key, -1)   AS employee_key,
+               a.order_date, a.ship_date, a.due_date,
+               a.order_qty::numeric(18,4)    AS order_qty,
+               a.received_qty::numeric(18,4) AS received_qty,
+               a.rejected_qty::numeric(18,4) AS rejected_qty,
+               a.unit_price::numeric(19,4)   AS unit_price,
+               a.line_total::numeric(19,4)   AS line_total,
+               ROUND(a.hdr_freight * a.line_total / NULLIF(a.order_total, 0), 4) AS allocated_freight,
+               ROUND(a.hdr_tax     * a.line_total / NULLIF(a.order_total, 0), 4) AS allocated_tax
+        FROM alloc a
+        LEFT JOIN silver.dim_product  dp ON dp.src_sys_id = a.src_sys_id AND dp.src_product_id = a.prod_id AND dp.is_current
+        LEFT JOIN silver.dim_supplier dv ON dv.src_sys_id = a.src_sys_id AND dv.src_supplier_id = a.ven_id
+        LEFT JOIN silver.dim_person   de ON de.src_sys_id = a.src_sys_id AND de.person_type = 'EMPLOYEE'
+                                        AND de.src_person_id = a.emp_id AND de.is_current
+    ) s
+       ON t.src_sys_id = s.src_sys_id AND t.src_order_id = s.src_order_id AND t.src_line_id = s.src_line_id
+    WHEN MATCHED AND (
+         ROW(t.supplier_key, t.order_date, t.ship_date, t.due_date, t.order_qty, t.received_qty,
+             t.rejected_qty, t.unit_price, t.line_total, t.allocated_freight, t.allocated_tax)
+         IS DISTINCT FROM
+         ROW(s.supplier_key, s.order_date, s.ship_date, s.due_date, s.order_qty, s.received_qty,
+             s.rejected_qty, s.unit_price, s.line_total, s.allocated_freight, s.allocated_tax)
+         OR (t.product_key  = -1 AND s.product_key  <> -1)
+         OR (t.employee_key = -1 AND s.employee_key <> -1)
+    ) THEN
+         UPDATE SET product_key  = CASE WHEN t.product_key  = -1 THEN s.product_key  ELSE t.product_key  END,
+                    employee_key = CASE WHEN t.employee_key = -1 THEN s.employee_key ELSE t.employee_key END,
+                    supplier_key = s.supplier_key,
+                    order_date = s.order_date, ship_date = s.ship_date, due_date = s.due_date,
+                    order_qty = s.order_qty, received_qty = s.received_qty, rejected_qty = s.rejected_qty,
+                    unit_price = s.unit_price, line_total = s.line_total,
+                    allocated_freight = s.allocated_freight, allocated_tax = s.allocated_tax,
+                    load_dts = CURRENT_TIMESTAMP, batch_id = p_batch_id
+    WHEN NOT MATCHED THEN
+         INSERT (src_sys_id, src_order_id, src_line_id, product_key, supplier_key, employee_key,
+                 order_date, ship_date, due_date, order_qty, received_qty, rejected_qty, unit_price,
+                 line_total, allocated_freight, allocated_tax, batch_id)
+         VALUES (s.src_sys_id, s.src_order_id, s.src_line_id, s.product_key, s.supplier_key, s.employee_key,
+                 s.order_date, s.ship_date, s.due_date, s.order_qty, s.received_qty, s.rejected_qty, s.unit_price,
+                 s.line_total, s.allocated_freight, s.allocated_tax, p_batch_id);
+END $$;

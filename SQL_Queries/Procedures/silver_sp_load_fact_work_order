@@ -1,0 +1,41 @@
+-- =====================================================
+-- silver.sp_load_fact_work_order  (standalone: one procedure; no helper functions needed)
+-- Prerequisite (load first): dim_product
+-- Run:    CALL silver.sp_load_fact_work_order(1);
+-- =====================================================
+
+-- =====================================================
+-- fact_work_order: AW22 WorkOrder
+-- =====================================================
+CREATE OR REPLACE PROCEDURE silver.sp_load_fact_work_order(p_batch_id BIGINT)
+LANGUAGE plpgsql AS $$
+BEGIN
+    MERGE INTO silver.fact_work_order t
+    USING (
+        SELECT 'AW22'::varchar AS src_sys_id, w.workorderid::text AS src_work_order_id,
+               COALESCE(dp.product_key, -1) AS product_key,
+               w.startdate::date AS start_date, w.enddate::date AS end_date, w.duedate::date AS due_date,
+               w.orderqty::numeric(18,4) AS order_qty, w.stockedqty::numeric(18,4) AS stocked_qty,
+               w.scrappedqty::numeric(18,4) AS scrapped_qty, w.scrapreasonid::text AS scrap_reason_src_id
+        FROM (SELECT DISTINCT ON (workorderid) * FROM bronze.aw22_workorder ORDER BY workorderid, load_date DESC) w
+        LEFT JOIN silver.dim_product dp
+               ON dp.src_sys_id = 'AW22' AND dp.src_product_id = w.productid::text AND dp.is_current
+    ) s
+       ON t.src_sys_id = s.src_sys_id AND t.src_work_order_id = s.src_work_order_id
+    WHEN MATCHED AND (
+         ROW(t.start_date, t.end_date, t.due_date, t.order_qty, t.stocked_qty, t.scrapped_qty, t.scrap_reason_src_id)
+         IS DISTINCT FROM
+         ROW(s.start_date, s.end_date, s.due_date, s.order_qty, s.stocked_qty, s.scrapped_qty, s.scrap_reason_src_id)
+         OR (t.product_key = -1 AND s.product_key <> -1)
+    ) THEN
+         UPDATE SET product_key = CASE WHEN t.product_key = -1 THEN s.product_key ELSE t.product_key END,
+                    start_date = s.start_date, end_date = s.end_date,
+                    due_date = s.due_date, order_qty = s.order_qty, stocked_qty = s.stocked_qty,
+                    scrapped_qty = s.scrapped_qty, scrap_reason_src_id = s.scrap_reason_src_id,
+                    load_dts = CURRENT_TIMESTAMP, batch_id = p_batch_id
+    WHEN NOT MATCHED THEN
+         INSERT (src_sys_id, src_work_order_id, product_key, start_date, end_date, due_date,
+                 order_qty, stocked_qty, scrapped_qty, scrap_reason_src_id, batch_id)
+         VALUES (s.src_sys_id, s.src_work_order_id, s.product_key, s.start_date, s.end_date, s.due_date,
+                 s.order_qty, s.stocked_qty, s.scrapped_qty, s.scrap_reason_src_id, p_batch_id);
+END $$;

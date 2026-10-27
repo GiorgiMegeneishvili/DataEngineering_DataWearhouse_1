@@ -1,0 +1,19 @@
+CALL silver.sp_load_dim_geography(1);
+CALL silver.sp_load_dim_person(1);
+CALL silver.sp_load_dim_product(1);
+CALL silver.sp_load_dim_sales_territory(1);
+CALL silver.sp_load_dim_shipper(1);
+CALL silver.sp_load_dim_supplier(1);
+CALL silver.sp_load_fact_purchase(1);
+CALL silver.sp_load_fact_sales(1);
+CALL silver.sp_load_fact_work_order(1);
+/*--------------------------------*/
+select * from silver.dim_geography;
+select * from silver.dim_person;
+select * from silver.dim_product;
+SELECT * FROM silver.dim_sales_territory;
+SELECT * FROM silver.dim_shipper;
+SELECT * FROM silver.dim_supplier;
+select * from silver.fact_purchase;
+SELECT * FROM silver.fact_sales;
+SELECT * FROM silver.fact_work_order;

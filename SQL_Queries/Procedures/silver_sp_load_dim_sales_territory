@@ -1,0 +1,34 @@
+
+
+-- =====================================================
+-- silver.sp_load_dim_sales_territory  (standalone: helper function + one procedure)
+-- No dependency on other dimensions.
+-- Run:    CALL silver.sp_load_dim_sales_territory(1);
+-- =====================================================
+
+CREATE OR REPLACE FUNCTION silver.f_clean(x text) RETURNS text
+LANGUAGE sql IMMUTABLE AS $$ SELECT NULLIF(TRIM(x), '') $$;
+
+-- =====================================================
+-- dim_sales_territory (SCD1): AW22 SalesTerritory
+-- =====================================================
+CREATE OR REPLACE PROCEDURE silver.sp_load_dim_sales_territory(p_batch_id BIGINT)
+LANGUAGE plpgsql AS $$
+BEGIN
+    MERGE INTO silver.dim_sales_territory t
+    USING (
+        SELECT 'AW22'::varchar AS src_sys_id, x.territoryid::text AS src_territory_id,
+               silver.f_clean(x.name) AS territory_name,
+               silver.f_clean(x.countryregioncode) AS country_region_code,
+               silver.f_clean(x."group") AS territory_group
+        FROM (SELECT DISTINCT ON (territoryid) * FROM bronze.aw22_salesterritory ORDER BY territoryid, load_date DESC) x
+    ) s
+       ON t.src_sys_id = s.src_sys_id AND t.src_territory_id = s.src_territory_id
+    WHEN MATCHED AND ROW(t.territory_name, t.country_region_code, t.territory_group)
+         IS DISTINCT FROM ROW(s.territory_name, s.country_region_code, s.territory_group) THEN
+         UPDATE SET territory_name = s.territory_name, country_region_code = s.country_region_code,
+                    territory_group = s.territory_group, load_dts = CURRENT_TIMESTAMP, batch_id = p_batch_id
+    WHEN NOT MATCHED THEN
+         INSERT (src_sys_id, src_territory_id, territory_name, country_region_code, territory_group, batch_id)
+         VALUES (s.src_sys_id, s.src_territory_id, s.territory_name, s.country_region_code, s.territory_group, p_batch_id);
+END $$;
