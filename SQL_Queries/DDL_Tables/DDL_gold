@@ -1,0 +1,167 @@
+-- =====================================================
+-- GOLD layer = data marts (denormalized, built from SILVER)
+--
+--   gold.mart_sales        grain: one sales line   (AW22 + NW1 + CNK1)
+--   gold.mart_purchase     grain: one purchase line (AW22)
+--   gold.mart_music_sales  grain: one invoice line  (CNK1 only, music analytics)
+--
+-- Every mart: src_sys_id ('AW22'|'NW1'|'CNK1') + source IDs, load_dts, batch_id
+-- No surrogate keys of dimensions here (analyst-facing). *_key in the PK is the
+-- silver fact key, kept only for traceability back to silver.
+-- Dates stay as DATE; order_year / order_month are derived columns (no dim_date).
+-- =====================================================
+CREATE SCHEMA IF NOT EXISTS gold;
+
+DROP TABLE IF EXISTS gold.mart_sales;
+DROP TABLE IF EXISTS gold.mart_purchase;
+DROP TABLE IF EXISTS gold.mart_music_sales;
+
+-- -----------------------------------------------------
+-- mart_sales
+-- -----------------------------------------------------
+CREATE TABLE gold.mart_sales (
+    sales_key            BIGINT       PRIMARY KEY,      -- silver.fact_sales.sales_key
+    src_sys_id           VARCHAR(10)  NOT NULL,
+    src_order_id         VARCHAR(50)  NOT NULL,
+    src_line_id          VARCHAR(50)  NOT NULL,
+
+    order_date           DATE,
+    due_date             DATE,
+    ship_date            DATE,
+    order_year           SMALLINT,
+    order_month          SMALLINT,
+
+    product_src_id       VARCHAR(50),
+    product_name         VARCHAR(250),
+    product_number       VARCHAR(50),
+    category             VARCHAR(100),
+    subcategory          VARCHAR(100),
+
+    customer_src_id      VARCHAR(50),
+    customer_name        VARCHAR(250),
+    customer_kind        VARCHAR(10),                   -- AW22: INDIVIDUAL | COMPANY
+
+    employee_src_id      VARCHAR(50),
+    employee_name        VARCHAR(250),
+
+    ship_country         VARCHAR(100),
+    ship_state_province  VARCHAR(100),
+    ship_city            VARCHAR(100),
+
+    territory_name       VARCHAR(100),
+    territory_group      VARCHAR(100),
+    shipper_name         VARCHAR(100),
+
+    quantity             NUMERIC(18,4),
+    unit_price           NUMERIC(19,4),
+    discount             NUMERIC(9,4),
+    line_total           NUMERIC(19,4),
+    allocated_freight    NUMERIC(19,4),
+    allocated_tax        NUMERIC(19,4),
+    total_amount         NUMERIC(19,4),                 -- line_total + freight + tax
+
+    load_dts             TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    batch_id             BIGINT       NOT NULL,
+    CONSTRAINT uq_mart_sales_bk   UNIQUE (src_sys_id, src_order_id, src_line_id),
+    CONSTRAINT chk_mart_sales_src CHECK (src_sys_id IN ('AW22', 'NW1', 'CNK1'))
+);
+
+CREATE INDEX ix_mart_sales_orderdate ON gold.mart_sales (order_date);
+CREATE INDEX ix_mart_sales_period    ON gold.mart_sales (order_year, order_month);
+CREATE INDEX ix_mart_sales_product   ON gold.mart_sales (src_sys_id, product_src_id);
+CREATE INDEX ix_mart_sales_customer  ON gold.mart_sales (src_sys_id, customer_src_id);
+CREATE INDEX ix_mart_sales_country   ON gold.mart_sales (ship_country);
+
+-- -----------------------------------------------------
+-- mart_purchase
+-- -----------------------------------------------------
+CREATE TABLE gold.mart_purchase (
+    purchase_key         BIGINT       PRIMARY KEY,      -- silver.fact_purchase.purchase_key
+    src_sys_id           VARCHAR(10)  NOT NULL,
+    src_order_id         VARCHAR(50)  NOT NULL,
+    src_line_id          VARCHAR(50)  NOT NULL,
+
+    order_date           DATE,
+    ship_date            DATE,
+    due_date             DATE,
+    order_year           SMALLINT,
+    order_month          SMALLINT,
+
+    product_src_id       VARCHAR(50),
+    product_name         VARCHAR(250),
+    category             VARCHAR(100),
+    subcategory          VARCHAR(100),
+
+    supplier_src_id      VARCHAR(50),
+    supplier_name        VARCHAR(150),
+    account_number       VARCHAR(50),
+    credit_rating        SMALLINT,
+    is_preferred         BOOLEAN,
+    supplier_country     VARCHAR(100),
+    supplier_city        VARCHAR(100),
+
+    employee_src_id      VARCHAR(50),                   -- buyer
+    employee_name        VARCHAR(250),
+
+    order_qty            NUMERIC(18,4),
+    received_qty         NUMERIC(18,4),
+    rejected_qty         NUMERIC(18,4),
+    unit_price           NUMERIC(19,4),
+    line_total           NUMERIC(19,4),
+    allocated_freight    NUMERIC(19,4),
+    allocated_tax        NUMERIC(19,4),
+    reject_rate          NUMERIC(9,4),                  -- rejected_qty / received_qty
+
+    load_dts             TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    batch_id             BIGINT       NOT NULL,
+    CONSTRAINT uq_mart_purchase_bk   UNIQUE (src_sys_id, src_order_id, src_line_id),
+    CONSTRAINT chk_mart_purchase_src CHECK (src_sys_id IN ('AW22', 'NW1', 'CNK1'))
+);
+
+CREATE INDEX ix_mart_purchase_orderdate ON gold.mart_purchase (order_date);
+CREATE INDEX ix_mart_purchase_period    ON gold.mart_purchase (order_year, order_month);
+CREATE INDEX ix_mart_purchase_product   ON gold.mart_purchase (src_sys_id, product_src_id);
+CREATE INDEX ix_mart_purchase_supplier  ON gold.mart_purchase (src_sys_id, supplier_src_id);
+
+-- -----------------------------------------------------
+-- mart_music_sales (CNK1 only)
+-- -----------------------------------------------------
+CREATE TABLE gold.mart_music_sales (
+    sales_key            BIGINT       PRIMARY KEY,      -- silver.fact_sales.sales_key
+    src_sys_id           VARCHAR(10)  NOT NULL,
+    src_order_id         VARCHAR(50)  NOT NULL,         -- invoiceid
+    src_line_id          VARCHAR(50)  NOT NULL,         -- invoicelineid
+
+    invoice_date         DATE,
+    invoice_year         SMALLINT,
+    invoice_month        SMALLINT,
+
+    track_src_id         VARCHAR(50),
+    track_name           VARCHAR(250),
+    artist_name          VARCHAR(120),
+    album_title          VARCHAR(160),
+    genre_name           VARCHAR(120),
+    media_type           VARCHAR(120),
+    composer             VARCHAR(220),
+
+    customer_src_id      VARCHAR(50),
+    customer_name        VARCHAR(250),
+    customer_country     VARCHAR(100),
+    customer_city        VARCHAR(100),
+    support_rep_name     VARCHAR(250),
+
+    quantity             NUMERIC(18,4),
+    unit_price           NUMERIC(19,4),
+    line_total           NUMERIC(19,4),
+
+    load_dts             TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    batch_id             BIGINT       NOT NULL,
+    CONSTRAINT uq_mart_music_sales_bk   UNIQUE (src_sys_id, src_order_id, src_line_id),
+    CONSTRAINT chk_mart_music_sales_src CHECK (src_sys_id = 'CNK1')
+);
+
+CREATE INDEX ix_mart_music_invoicedate ON gold.mart_music_sales (invoice_date);
+CREATE INDEX ix_mart_music_period      ON gold.mart_music_sales (invoice_year, invoice_month);
+CREATE INDEX ix_mart_music_genre       ON gold.mart_music_sales (genre_name);
+CREATE INDEX ix_mart_music_artist      ON gold.mart_music_sales (artist_name);
+CREATE INDEX ix_mart_music_country     ON gold.mart_music_sales (customer_country);
