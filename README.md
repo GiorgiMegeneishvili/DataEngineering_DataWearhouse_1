@@ -13,3 +13,24 @@ This project demonstrates how to:
 - Load curated data into **PostgreSQL**
 - Build **Data Lakehouse** optimized for analytics
 - Design **Galaxy Schema** for reporting and BI tools
+
+
+
+## 🧠 Architecture Overview
+
+The project follows a layered ETL&ELT approach inspired by modern data architectures:
+
+Source Data (MSSQL)
+  ↓
+  ↓
+PySpark ETL&ELT 
+          ↓
+          ↓
+    PostgreSQL   
+          ↓
+    Bronze Layer - (Copy/Past tables
+          ↓
+    Silver Layer - Data Lakehouse (Galaxy Schema) 
+          ↓
+    Gold Layer - (Data marts )
+
