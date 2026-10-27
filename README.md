@@ -137,22 +137,25 @@ Marts are denormalized (dimension attributes are flattened in), carry derived co
 
 
 
+## ⚙️ Orchestration
 
-⚙️ Orchestration
+Airflow DAG **`dwh_pipeline`**:
 
-Airflow DAG dwh_pipeline:
-
+```
 bronze_aw22 → bronze_cnk1 → bronze_nw1 → silver → gold
-Bronze tasks run one after another (one Spark session at a time)
-silver calls CALL silver.sp_load_* procedures; gold calls CALL gold.sp_load_mart_*
-One batch_id is passed through Silver and Gold, so every row can be traced to the run that loaded it
-max_active_runs=1, catchup=False; the schedule is configurable in dags/dwh_pipeline.py
+```
 
+- Bronze tasks run one after another (one Spark session at a time)
+- `silver` calls `CALL silver.sp_load_*` procedures; `gold` calls `CALL gold.sp_load_mart_*`
+- One `batch_id` is passed through Silver and Gold, so every row can be traced to the run that loaded it
+- `max_active_runs=1`, `catchup=False`; the schedule is configurable in `dags/dwh_pipeline.py`
 
+---
 
+## 📁 Project Structure
 
-
-📁 Project Structure
+```
+.
 ├── Bronze_Layer/          # PySpark loaders per source (AW22, NW1, CNK1)
 ├── Silver_Layer/          # Python wrapper that runs the Silver procedures
 ├── Gold_Layer/            # Python wrapper that runs the Gold procedures
@@ -162,40 +165,50 @@ max_active_runs=1, catchup=False; the schedule is configurable in dags/dwh_pipel
 ├── Dockerfile             # Airflow + Java 17 + PySpark
 ├── docker-compose.yaml    # Airflow (webserver, scheduler, init) + metadata DB
 └── requirements.txt
+```
 
+---
 
+## ▶️ How to Run
 
-▶️ How to Run
-Create the database objects in PostgreSQL (schemas bronze, silver, gold: tables first, then the stored procedures).
-Put the JDBC drivers (MSSQL and PostgreSQL) into jars/.
-Create a .env next to docker-compose.yaml (never commit it):
-env
-   AIRFLOW_UID=1000
+1. **Create the database objects** in PostgreSQL (schemas `bronze`, `silver`, `gold`: tables first, then the stored procedures).
+2. **Put the JDBC drivers** (MSSQL and PostgreSQL) into `jars/`.
+3. **Create a `.env`** next to `docker-compose.yaml` (never commit it):
 
-   DB_SQL_DATABASE_AdventureWorks2022=AdventureWorks2022
-   DB_SQL_DATABASE_NORTHWND=Northwind
-   DB_SQL_DATABASE_Chinook=Chinook
-   DB_SQL_USER=<user>
-   DB_SQL_PASSWORD=<password>
-   DB_SQL_DRIVER=com.microsoft.sqlserver.jdbc.SQLServerDriver
+```env
+AIRFLOW_UID=1000
 
-   DB_POSTGRESQL_DATABASE=DWH
-   DB_POSTGRESQL_USER=<user>
-   DB_POSTGRESQL_PASSWORD=<password>
-   DB_POSTGRESQL_DRIVER=org.postgresql.Driver
-   DB_POSTGRESQL_PORT=5432
+DB_SQL_DATABASE_AdventureWorks2022=AdventureWorks2022
+DB_SQL_DATABASE_NORTHWND=Northwind
+DB_SQL_DATABASE_Chinook=Chinook
+DB_SQL_USER=your_user
+DB_SQL_PASSWORD=your_password
+DB_SQL_DRIVER=com.microsoft.sqlserver.jdbc.SQLServerDriver
 
-Inside Docker the databases on the host are reached through host.docker.internal (set in docker-compose.yaml via DB_SQL_HOST and DB_POSTGRESQL_HOST).
+DB_POSTGRESQL_DATABASE=DWH
+DB_POSTGRESQL_USER=your_user
+DB_POSTGRESQL_PASSWORD=your_password
+DB_POSTGRESQL_DRIVER=org.postgresql.Driver
+DB_POSTGRESQL_PORT=5432
+```
 
-Start Airflow:
-bash
-   docker compose up -d --build
-Open http://localhost:8081 (admin / admin), find dwh_pipeline and press Trigger DAG.
+   Inside Docker the databases on the host are reached through `host.docker.internal` (set in `docker-compose.yaml` via `DB_SQL_HOST` and `DB_POSTGRESQL_HOST`).
 
-If PostgreSQL runs on the host machine, it must accept connections from the Docker network (listen_addresses and pg_hba.conf).
+4. **Start Airflow:**
 
-🗺️ Roadmap
-Power BI (or another BI tool) dashboards on top of the Gold marts
-Data quality checks between layers
-Reference tables (dim_source_system) instead of CHECK constraints on src_sys_id
-Partitioning of large Silver facts
+```bash
+docker compose up -d --build
+```
+
+5. Open **http://localhost:8081** (`admin` / `admin`), find `dwh_pipeline` and press **Trigger DAG**.
+
+> If PostgreSQL runs on the host machine, it must accept connections from the Docker network (`listen_addresses` and `pg_hba.conf`).
+
+---
+
+## 🗺️ Roadmap
+
+- Power BI (or another BI tool) dashboards on top of the Gold marts
+- Data quality checks between layers
+- Reference tables (`dim_source_system`) instead of `CHECK` constraints on `src_sys_id`
+- Partitioning of large Silver facts
