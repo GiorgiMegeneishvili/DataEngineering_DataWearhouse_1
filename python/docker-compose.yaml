@@ -1,0 +1,76 @@
+x-airflow-common: &airflow-common
+  build: .
+  image: dwh-airflow:2.11
+  user: "${AIRFLOW_UID:-50000}:0"
+  env_file:
+    - .env
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  environment: &airflow-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+    AIRFLOW__WEBSERVER__SECRET_KEY: "change-me-long-random-string"
+    PYTHONPATH: /opt/airflow/project
+    # კონტეინერიდან ლოკალური ბაზები host.docker.internal-ით ჩანს
+    DB_SQL_HOST: host.docker.internal
+    DB_POSTGRESQL_HOST: host.docker.internal
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./plugins:/opt/airflow/plugins
+    - ./jars:/opt/airflow/jars
+    - ./data:/opt/airflow/data
+    - ./scripts:/opt/airflow/scripts
+    - ./:/opt/airflow/project
+
+services:
+  postgres:
+    image: postgres:15
+    restart: always
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      retries: 10
+
+  airflow-init:
+    <<: *airflow-common
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command:
+      - bash
+      - -c
+      - |
+        airflow db migrate &&
+        airflow users create --username admin --password admin \
+          --firstname Giorgi --lastname User --role Admin \
+          --email admin@airflow.local || true
+
+  airflow-webserver:
+    <<: *airflow-common
+    restart: always
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    ports:
+      - "8081:8080"
+    command: webserver
+
+  airflow-scheduler:
+    <<: *airflow-common
+    restart: always
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    command: scheduler
+
+volumes:
+  postgres-db-volume:
