@@ -28,9 +28,27 @@ PySpark ETL&ELT
           ↓
     PostgreSQL   
           ↓
-    Bronze Layer - (Copy/Past tables
+    Bronze Layer - (Copy/Past tables_
           ↓
     Silver Layer - Data Lakehouse (Galaxy Schema) 
           ↓
     Gold Layer - (Data marts )
+![Pipeline](Data_LakeHouse_Diagram.png)
 
+
+
+/*********************************************************************************************************/
+/*********************************************************************************************************/
+/*********************************************************************************************************/
+## 📊 Data Modeling: Silver Layer - Data Lakehouse (Galaxy Schema) 
+
+![Pipeline](silver_diagram.png)
+
+
+
+
+
+
+
+## 📊 Data Modeling: Silver Layer - Gold Layer - (Data marts )
+![Pipeline](gold_diagram.png)
